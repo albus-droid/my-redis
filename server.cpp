@@ -17,17 +17,18 @@ static void die(const char *msg) {
     abort();
 }
 
-static void do_something(int fd) {
+static int do_something(int fd) {
    char buf[4096] = {};
    ssize_t n = read(fd, buf, sizeof(buf) - 1);
    if (n < 0) {
        msg("read() failed");
-       return;
+       return -1;
    }
    fprintf(stderr, "client says: %.*s\n", (int)n, buf);
 
    char reply[4096] = "world";
    write(fd, reply, strlen(reply));
+   return 0;
 }
 
 int main() {
@@ -62,7 +63,12 @@ int main() {
         if (client_fd < 0) {
             continue;
         }
-        do_something(client_fd);
+        while (true) {
+            int32_t err = do_something(client_fd);
+            if (err) {
+                break;
+            }
+        }
         close(client_fd);
     }
     return 0;
