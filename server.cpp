@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
 
 static void msg(const char *msg) {
     fprintf(stderr, "%s\n", msg);
@@ -17,18 +18,65 @@ static void die(const char *msg) {
     abort();
 }
 
+static int32_t read_full(int fd, char *buf, ssize_t n) {
+    while (n > 0) {
+        ssize_t rv = read(fd, buf, n);
+        if (rv <= 0) {
+            return -1;
+        }
+        assert((ssize_t)rv <= n);
+        n -= (size_t)rv;
+        buf += rv;
+    }
+    return 0;
+}
+
+static int32_t write_all(int fd, const char *buf, ssize_t n) {
+   while (n > 0) {
+       ssize_t rv = write(fd, buf, n);
+       if (rv <= 0) {
+           return -1;
+       }
+       assert((ssize_t)rv <= n);
+       n -= (size_t)rv;
+       buf += rv;
+   }
+   return 0;
+}
+
+const size_t k_max_message = 4096;
+
 static int do_something(int fd) {
-   char buf[4096] = {};
-   ssize_t n = read(fd, buf, sizeof(buf) - 1);
-   if (n < 0) {
-       msg("read() failed");
+    // 4 bytes header
+   char rbuf[4 + k_max_message];
+   errno = 0;
+   int32_t err = read_full(fd, rbuf, 4);
+   if (err) {
+       msg(errno == 0 ? "EOF" : "read() error");
+       return err;
+   }
+
+   uint32_t len = 0;
+   memcpy(&len, rbuf, 4);
+   if (len > k_max_message) {
+       msg("too long");
        return -1;
    }
-   fprintf(stderr, "client says: %.*s\n", (int)n, buf);
 
-   char reply[4096] = "world";
-   write(fd, reply, strlen(reply));
-   return 0;
+   err = read_full(fd, &rbuf[4], len);
+   if (err) {
+       msg("read() error");
+       return err;
+   }
+
+   printf("client says: %.*s\n", len, &rbuf[4]);
+
+   const char reply[] = "world";
+   char wbuf[4 + sizeof(reply)];
+   len = (uint32_t)strlen(reply);
+   memcpy(wbuf, &len, 4);
+   memcpy(&wbuf[4], reply, len);
+   return write_all(fd, wbuf, 4 + len);
 }
 
 int main() {
