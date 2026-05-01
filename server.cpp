@@ -5,13 +5,13 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <string.h>
-#include <system_error>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <vector>
 #include <poll.h>
+#include <fcntl.h>
 
 const size_t k_max_msg = 4096;
 
@@ -41,45 +41,28 @@ static void die(const char *msg) {
     abort();
 }
 
-
-static int do_something(int fd) {
-    // 4 bytes header
-   char rbuf[4 + k_max_message];
-   errno = 0;
-   int32_t err = read_full(fd, rbuf, 4);
-   if (err) {
-       msg(errno == 0 ? "EOF" : "read() error");
-       return err;
-   }
-
-   uint32_t len = 0;
-   memcpy(&len, rbuf, 4);
-   if (len > k_max_message) {
-       msg("too long");
-       return -1;
-   }
-
-   err = read_full(fd, &rbuf[4], len);
-   if (err) {
-       msg("read() error");
-       return err;
-   }
-
-   printf("client says: %.*s\n", len, &rbuf[4]);
-
-   const char reply[] = "world";
-   char wbuf[4 + sizeof(reply)];
-   len = (uint32_t)strlen(reply);
-   memcpy(wbuf, &len, 4);
-   memcpy(&wbuf[4], reply, len);
-   return write_all(fd, wbuf, 4 + len);
-}
-
 static void conn_put(std::vector<Conn *> &fd2conn, struct Conn *conn) {
     if (fd2conn.size() <= (size_t)conn->fd) {
         fd2conn.resize(conn->fd + 1);
     }
     fd2conn[conn->fd] = conn;
+}
+
+static void fd_set_nb(int fd) {
+    errno = 0;
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (errno) {
+        die("fcntl F_GETFL");
+        return;
+    }
+
+    flags |= O_NONBLOCK;
+
+    errno = 0;
+    (void)fcntl(fd, F_SETFL, flags);
+    if (errno) {
+        die("fcntl F_SETFL");
+    }
 }
 
 static int32_t accept_new_conn(std::vector<Conn *> &fd2conn, int fd) {
@@ -101,12 +84,64 @@ static int32_t accept_new_conn(std::vector<Conn *> &fd2conn, int fd) {
     return 0;
 }
 
-static void state_req(Conn *conn) {
-    while (try_fill_buffer(conn)) {}
+static bool try_flush_buffer(Conn *conn) {
+    ssize_t rv = 0;
+    do {
+        size_t remain = conn->wbuf_size - conn->wbuf_sent;
+        rv = write(conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
+    } while (rv < 0 && errno == EINTR); // retrying even when there is an interrupt
+    if (rv < 0 && errno == EAGAIN) {
+        return false;
+    }
+    if (rv < 0) {
+        msg("write() error");
+        conn->state = STATE_END;
+        return false;
+    }
+    conn->wbuf_sent += (size_t)rv;
+    assert(conn->wbuf_sent <= conn->wbuf_size);
+    if (conn->wbuf_sent == conn->wbuf_size) {
+        conn->state = STATE_REQ;
+        conn->wbuf_size = 0;
+        conn->wbuf_sent = 0;
+        return false;
+    }
+    return true;
 }
 
 static void state_res(Conn *conn) {
+    while (try_flush_buffer(conn)) {}
+}
 
+static bool try_one_request(Conn *conn) {
+    if (conn->rbuf_size < 4) { // uint64_t is 4 bytes, we are expecting that at the minimum. if not retry
+        return false;
+    }
+    uint32_t len = 0;
+    memcpy(&len, &conn->rbuf[0], 4);
+    if (len > k_max_msg) {
+        msg("too long");
+        conn->state = STATE_END;
+        return false;
+    }
+    if (4 + len < conn->rbuf_size) {
+        return false;
+    }
+    printf("client says: %.*s\n", len, &conn->rbuf[4]);
+
+    memcpy(&conn->rbuf[0], &len, 4);
+    memcpy(&conn->rbuf[4], &conn->rbuf[4], len);
+    conn->wbuf_size = 4 + len;
+
+    size_t remain = conn->rbuf_size - (4 + len);
+    if (remain) {
+        memmove(&conn->rbuf[0], &conn->rbuf[4 + len], remain);
+    }
+    conn->rbuf_size = remain;
+    conn->state = STATE_RES;
+    state_res(conn);
+
+    return (conn->state == STATE_REQ);
 }
 
 static bool try_fill_buffer(Conn *conn) {
@@ -115,7 +150,7 @@ static bool try_fill_buffer(Conn *conn) {
     do {
         size_t cap = sizeof(conn->rbuf) - conn->rbuf_size;
         rv = read(conn->fd, &conn->rbuf[conn->rbuf_size], cap);
-    } while (rv < 0 && errno == EINTR);
+    } while (rv < 0 && errno == EINTR); // retrying even when there is an interrupt
     if (rv < 0 && errno == EAGAIN) {
         return false;
     }
@@ -136,8 +171,12 @@ static bool try_fill_buffer(Conn *conn) {
     }
     conn->rbuf_size += size_t(rv);
     assert(conn->rbuf_size <= sizeof(conn->rbuf) - conn->rbuf_size);
-    while(try_one_request(conn)) {}
+    while(try_one_request(conn)) {} // not just one request, it can be multiple requests
     return (conn->state == STATE_REQ);
+}
+
+static void state_req(Conn *conn) {
+    while (try_fill_buffer(conn)) {}
 }
 
 static void connection_io(Conn *conn) {
