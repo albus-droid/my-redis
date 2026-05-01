@@ -41,6 +41,9 @@ static void die(const char *msg) {
     abort();
 }
 
+// fd keeps increasing sequentially, and fd2conn has to keep up, since this uses array-indexing.
+// Don't worry it is very unlikely to reach fd max-limit since kernel always reuses fds.
+// A better alternative would be to use hash-maps, so no waste slots.
 static void conn_put(std::vector<Conn *> &fd2conn, struct Conn *conn) {
     if (fd2conn.size() <= (size_t)conn->fd) {
         fd2conn.resize(conn->fd + 1);
@@ -48,7 +51,7 @@ static void conn_put(std::vector<Conn *> &fd2conn, struct Conn *conn) {
     fd2conn[conn->fd] = conn;
 }
 
-static void fd_set_nb(int fd) {
+static void fd_set_nonblock(int fd) {
     errno = 0;
     int flags = fcntl(fd, F_GETFL, 0);
     if (errno) {
@@ -73,7 +76,7 @@ static int32_t accept_new_conn(std::vector<Conn *> &fd2conn, int fd) {
         msg("accept() error");
         return -1;
     }
-    fd_set_nb(connfd);
+    fd_set_nonblock(connfd);
     struct Conn *conn = (struct Conn *)malloc(sizeof(struct Conn));
     conn->fd = connfd;
     conn->state = STATE_REQ;
@@ -215,7 +218,7 @@ int main() {
 
     std::vector<Conn *>fd2conn;
 
-    fd_set_nb(fd);
+    fd_set_nonblock(fd);
 
     std::vector<struct pollfd> poll_args;
 
