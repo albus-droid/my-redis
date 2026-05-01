@@ -20,8 +20,8 @@ static void die(const char *msg) {
     abort();
 }
 
-static int32_t read_full(int fd, char *buf, ssize_t n);
-static int32_t write_all(int fd, const char *buf, ssize_t n);
+static int32_t read_full(int fd, char *buf, size_t n);
+static int32_t write_all(int fd, const char *buf, size_t n);
 
 static int32_t send_req(int fd, const char *text) {
     uint32_t len = (uint32_t)strlen(text);
@@ -59,7 +59,7 @@ static int32_t read_res(int fd) {
   return 0;
 }
 
-static int32_t read_full(int fd, char *buf, ssize_t n) {
+static int32_t read_full(int fd, char *buf, size_t n) {
     while (n > 0) {
         ssize_t rv = read(fd, buf, n);
         if (rv <= 0) {
@@ -72,7 +72,7 @@ static int32_t read_full(int fd, char *buf, ssize_t n) {
     return 0;
 }
 
-static int32_t write_all(int fd, const char *buf, ssize_t n) {
+static int32_t write_all(int fd, const char *buf, size_t n) {
    while (n > 0) {
        ssize_t rv = write(fd, buf, n);
        if (rv <= 0) {

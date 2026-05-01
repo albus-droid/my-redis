@@ -124,13 +124,13 @@ static bool try_one_request(Conn *conn) {
         conn->state = STATE_END;
         return false;
     }
-    if (4 + len < conn->rbuf_size) {
+    if (4 + len > conn->rbuf_size) {
         return false;
     }
     printf("client says: %.*s\n", len, &conn->rbuf[4]);
 
-    memcpy(&conn->rbuf[0], &len, 4);
-    memcpy(&conn->rbuf[4], &conn->rbuf[4], len);
+    memcpy(&conn->wbuf[0], &len, 4);
+    memcpy(&conn->wbuf[4], &conn->rbuf[4], len);
     conn->wbuf_size = 4 + len;
 
     size_t remain = conn->rbuf_size - (4 + len);
@@ -170,7 +170,7 @@ static bool try_fill_buffer(Conn *conn) {
         return false;
     }
     conn->rbuf_size += size_t(rv);
-    assert(conn->rbuf_size <= sizeof(conn->rbuf) - conn->rbuf_size);
+    assert(conn->rbuf_size <= sizeof(conn->rbuf));
     while(try_one_request(conn)) {} // not just one request, it can be multiple requests
     return (conn->state == STATE_REQ);
 }
